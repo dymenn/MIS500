@@ -1,0 +1,152 @@
+install.packages("SCperf")
+library(dplyr)
+library(SCperf)
+install.packages("zoo")
+library(zoo)
+install.packages("lubridate")
+library(lubridate)
+
+#Import dataset
+SuppliesData <- read.csv("Supplies Consumption - 2019.csv")
+
+#Summary statistics
+summary(SuppliesData$Supplies.Consumption)
+
+#Convert date of record from a factor class to date class
+DateConversion <- as.Date(SuppliesData$Doc.Date, format = "%m/%d/%Y")
+
+#Add date class column to new data frame
+SuppliesData1 <- SuppliesData %>%
+  mutate(DateConversion)
+
+#Create dates not included in the data frame
+alldates <- seq(as.Date(as.yearmon(min(SuppliesData1$DateConversion))),
+                as.Date(as.yearmon(max(SuppliesData1$DateConversion))),
+                by="day")
+
+#Merge newly populated dates into SuppliesData1 and create new data frame
+mergeddates <- merge(data.frame(Date = alldates),
+                     SuppliesData1,
+                     by.x = 'Date',
+                     by.y = 'DateConversion',
+                     all.x = T,
+                     all.y = T)
+
+#Replace NAs with 0 in new data frame
+mergeddates$Supplies.Consumption[is.na(mergeddates$Supplies.Consumption)] = 0
+
+#Calculate daily supply consumption
+DailyConsumption <- mergeddates %>%
+  group_by(Date)%>%
+  summarize(sum = sum(Supplies.Consumption))
+
+#Calculate monthly mean demand
+MonthlyMD <- DailyConsumption %>%
+  group_by(month=floor_date(Date, "month"))%>%
+  summarize(MonthlyMean = sum(sum/days_in_month(month)))
+
+#Calculate annual mean demand
+AnnualMD <- mean(MonthlyMD$MonthlyMean)
+
+#Calculate the standard deviation of monthly demand
+MD_SD <- DailyConsumption %>%
+  group_by(month=floor_date(Date, "month"))%>%
+  summarize(sd = sd(sum))
+
+#Calculate annual standard deviation
+Mean_SD <- mean(MD_SD$sd)
+
+#T-Test
+t.test(DailyConsumption$sum,
+       mu = mean(SuppliesData$Supplies.Consumption),
+       alternative = "greater")
+
+#-------------------------------------------------
+
+
+#Set mean demand
+md <- round(as.numeric(AnnualMD))
+
+#Set standard deviation of the demand
+sd <- round(as.numeric(Mean_SD))
+
+#Set service level
+SL <- as.numeric(0.99)
+
+#Set lead time in days
+L <- as.numeric(7)
+
+#Get safety stock
+ss <- ceiling(SS(SL, sd, L))
+print(paste("Safety stock:", ss))
+
+#Get reorder point
+rop <- ceiling(ROP(SL, md, sd, L))
+print(paste("Reorder point:", rop))
+
+#------------------------------------------
+
+#Set initial inventory
+init <- as.numeric(6480)
+
+#Inventory column
+inventory <- init
+
+#Set available inventory
+av_inv <- inventory
+
+#Demand consumption
+while (av_inv >=0) {
+  usage <- ceiling(rnorm(1,md,sd))
+  
+  if(usage > 0){
+    av_inv <- av_inv - usage
+  }
+  inventory <- append(inventory, av_inv)
+}
+
+# Day column
+day <- c(1:length(inventory))
+
+# Construct data frame
+inv_mgmt <- data.frame(day, inventory)
+
+# Determine the ROP day
+i <- 1
+while(inv_mgmt$inventory[i] > rop+ss){
+  i <- i + 1
+}
+
+# Import ggplot2 package
+#install.packages("ggplot2")
+library(ggplot2)
+
+# Build inventory graph
+ggplot(data = inv_mgmt, 
+       aes(x = day)) +
+  geom_line(aes(y = inventory,
+                col = "Available inventory")) +
+  geom_line(aes(y = ss,
+                col = "Safety stock"),
+            linetype = "dashed") +
+  geom_line(aes(y = 0,
+                col = "Out of stock"),
+            linetype = "dashed") +
+  geom_segment(aes(x = i, xend = i, y = 0, yend = inv_mgmt$inventory[i]), 
+               col = "grey") +
+  geom_segment(aes(x = 0, xend = i, y = inv_mgmt$inventory[i], yend = inv_mgmt$inventory[i]), 
+               col = "grey") +
+  geom_point(x = i, y = inv_mgmt$inventory[i], size = 5, col = "red") +
+  annotate("text", x = i, y = inv_mgmt$inventory[i], label = "Reorder point") +
+  geom_point(x = i + L, y = inv_mgmt$inventory[i + L], size = 5, col = "green") +
+  annotate("text", x = i + L, y = inv_mgmt$inventory[i + L], label = "Arrival") +
+  labs(title = "Safety Stock and Reorder Point",
+       subtitle = "Inventory Planning and Managing",
+       x = "Day",
+       y = "Inventory Level",
+       caption = "Variability in lead time not assumed",
+       color = NULL) +
+  xlim(c(0, i + L)) +
+  ylim(c(0, max(inv_mgmt$inventory))) +
+  scale_color_manual(labels = c("Available inventory", "Out of stock", "Safety Stock"),
+                     values = c("Available inventory" = "black", "Safety stock" = "orange", "Out of stock" = "red"))
